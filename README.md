@@ -13,31 +13,29 @@ This patch removes that limitation. With it, DSpark serves **multiple concurrent
 
 ## Results
 
-All on one TP=2 replica (2× GB10), `kv-cache-dtype fp8`, MTP/DSpark `γ=5`, `gpu-memory-utilization 0.80`.
+Headline below; **full single + dual-stack tables in [`RESULTS.md`](RESULTS.md).**
+One stack = 2× DGX Spark (GB10), TP=2, `kv-cache-dtype fp8`, DSpark `γ=5`,
+`gpu-memory-utilization 0.80`, `max-num-seqs 16`.
 
-### Concurrency unlocked (this patch)
+### Concurrency unlocked (this patch) — one 2-Spark stack
 
-**Staggered, independent arrivals** — the real ragged mixed-prefill+decode path the patch fixes:
+| total concurrency | static (best-case) | staggered (real arrivals) | acceptance | errors |
+|---:|---:|---:|---:|---:|
+| 1  | 49 tok/s  | ~50 tok/s | ~0.6 | 0 |
+| 4  | 122 tok/s | 104 tok/s | ~0.59 | 0 |
+| 8  | 183 tok/s | 139 tok/s | ~0.56 | 0 |
+| 16 | **290 tok/s** | **191 tok/s** | ~0.55 | 0 |
 
-| concurrency | success | server aggregate | draft acceptance |
-|---|---|---|---|
-| 4  | 4/4   | 94.6 tok/s  | 0.551 |
-| 8  | 8/8   | 129.5 tok/s | 0.541 |
-| 16 | 16/16 | 190.2 tok/s | 0.568 |
+- **Single-stream unchanged**: ~50–54 tok/s, provably byte-identical output.
+- **Zero errors** at every level; draft acceptance stays healthy (~0.55) — DSpark keeps accelerating under load.
 
-**Static (all-simultaneous) batch** — best-case overlap:
+### Scaling out — 2 stacks (4 Sparks) measured
 
-| concurrency | server aggregate | per-stream |
-|---|---|---|
-| 1  | 52.1 tok/s  | 52.1 |
-| 2  | 82.6 tok/s  | 41.3 |
-| 4  | 123.9 tok/s | 31.0 |
-| 8  | 212.3 tok/s | 26.5 |
-| 16 | 301.2 tok/s | 18.8 |
+| total concurrency | 1 stack | 2 stacks | scaling |
+|---:|---:|---:|---:|
+| 32 | — | **375 tok/s** (16+16, 32/32 ok) | **~1.96×** |
 
-- **Zero errors** at every concurrency level; **draft acceptance stays healthy (~0.55)** — DSpark keeps accelerating under load.
-- **Single-stream unchanged**: ~52–54 tok/s, and provably byte-identical output (see correctness test).
-- Two such replicas (4 nodes) ≈ **double** the aggregate / concurrency.
+Replicas scale ~linearly (independent stacks behind a least-connections router).
 
 ### Correctness
 

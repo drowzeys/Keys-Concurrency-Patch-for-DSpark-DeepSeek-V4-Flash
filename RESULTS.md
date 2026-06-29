@@ -1,79 +1,107 @@
-# Aggregate results & summary
+# Results — single 2× DGX Spark stack (TP=2)
 
-All measurements: one TP=2 replica (2× DGX Spark GB10), DeepSeek-V4-Flash-DSpark,
+All single-stack numbers are **one stack = 2× DGX Spark (GB10), TP=2**, one GPU per
+node, serving `DeepSeek-V4-Flash-DSpark` with this patch:
 `kv-cache-dtype fp8`, DSpark `γ=5`, `gpu-memory-utilization 0.80`,
-`max-model-len 262144`. Throughput is **server-side** (`/metrics`
-`vllm:generation_tokens_total` delta); acceptance is
-`spec_decode_num_accepted_tokens / num_draft_tokens`. Benchmark scripts in
+`max-model-len 262144`, `VLLM_DSPARK_GPU_REJECTED_CONTEXT_MASK=1`,
+`max-num-seqs 16`.
+
+Throughput is **server-side** (`/metrics vllm:generation_tokens_total` delta);
+acceptance is `spec_decode_num_accepted_tokens / num_draft_tokens`. Scripts in
 `benchmarks/`.
 
-## 1. Single-stream — A vs B (official harness, code_completion 512→256)
+## Single-stream baseline
 
-| replica | recipe | decode tok/s | acceptance | accepted/draft |
-|---|---|---:|---:|---:|
-| A | Rafael Caricio stack | 54.0 | 0.640 | 3.20 |
-| B | TonyD2Wild packaged | 52.1 | 0.617 | 3.09 |
+| metric | value |
+|---|---:|
+| decode | ~50–54 tok/s |
+| draft acceptance | ~0.55–0.62 |
+| accepted / draft block | ~3.2 |
 
-Same engine (B vendors A's overlay) → difference is run-to-run noise. Reference
-upstream number is ~62; the gap is acceptance/content variance (GPU clocks and
-warmup were ruled out — `0x0` throttle, 49–53 °C).
+Single-stream is **byte-identical** to the unpatched engine (the patch is a no-op
+when the batch permutation is identity).
 
-## 2. Concurrency — STATIC batch (all requests simultaneous; best-case overlap)
+## Concurrency — STATIC batch (all requests simultaneous; best-case overlap)
 
-| concurrency | server aggregate tok/s | per-stream tok/s | acceptance |
+| concurrency | server aggregate | per-stream | acceptance |
 |---:|---:|---:|---:|
-| 1  | 52.1  | 52.1 | 0.59–0.64 |
-| 2  | 82.6  | 41.3 | 0.60 |
-| 4  | 123.9 | 31.0 | 0.58–0.63 |
-| 8  | 212.3 | 26.5 | 0.58–0.62 |
-| 16 | 301.2 | 18.8 | 0.59–0.61 |
+| 1  | 49 tok/s  | 49 | ~0.61 |
+| 2  | 81 tok/s  | 40 | ~0.59 |
+| 4  | 122 tok/s | 30 | ~0.59 |
+| 8  | 183 tok/s | 23 | ~0.59 |
+| 16 | **290 tok/s** | 18 | ~0.60 |
 
-## 3. Concurrency — STAGGERED arrivals (real, independent; the ragged path Patch 2 fixes)
+## Concurrency — STAGGERED arrivals (real, independent; the ragged path Patch 2 enables)
 
-| concurrency | success | server aggregate tok/s | acceptance |
+| concurrency | success | server aggregate | acceptance |
 |---:|---:|---:|---:|
-| 4  | 4/4   | 94.6  | 0.551 |
-| 8  | 8/8   | 129.5 | 0.541 |
-| 16 | 16/16 | 190.2 | 0.568 |
+| 1  | 1/1   | 46 tok/s  | ~0.51 |
+| 4  | 4/4   | 104 tok/s | ~0.59 |
+| 8  | 8/8   | 139 tok/s | ~0.56 |
+| 16 | 16/16 | **191 tok/s** | ~0.55 |
 
 Static is the upper bound (perfect overlap); staggered is the realistic floor for
-that load shape. Production workloads land between them. **Zero errors at every
-level; acceptance stays healthy (~0.55), i.e. DSpark keeps accelerating under
-concurrency.**
+that load shape. Production lands between them. **Zero errors at every level;
+acceptance stays healthy (~0.55) — DSpark keeps accelerating under concurrency.**
 
-## 4. Correctness under continuous-batch condense
+## Correctness under continuous-batch condense
 
 | check | result |
 |---|---|
-| Deterministic victim output, alone vs under churn | **byte-identical** |
-| Requests succeeding while others start/finish | 16/16, 0 errors |
-| Single-stream output vs unpatched engine | byte-identical (no-op) |
+| Deterministic output, alone vs under churn (requests start/finish around it) | **byte-identical** |
+| Requests succeeding while others churn | 16/16, 0 errors |
+| Single-stream vs unpatched engine | byte-identical (no-op) |
 
-## 5. Two replicas (4 nodes)
+## Summary (one 2-Spark stack)
 
-Two independent patched TP=2 replicas behind a least-connections router ≈ **double**
-the aggregate and concurrency: order of **~380 tok/s @ 32 concurrent** staggered
-(extrapolated from the single-replica curve; each request runs entirely on one
-replica).
+| | before patch | after (Patch 1 + Patch 2) |
+|---|---|---|
+| concurrency | locked to 1 (single stream) | up to 16 concurrent, correct |
+| `max-num-seqs>1` | acceptance collapse / HTTP 500 | 0 errors, acceptance ~0.55 |
+| throughput | 1 stream @ ~52 tok/s | **~290 static / ~191 staggered @16**; single-stream unchanged |
 
 ---
 
-## Summary
+# Scaling out — replica parallelism to multiply concurrency
 
-| before this patch | after (Patch 1 + Patch 2) |
-|---|---|
-| DSpark locked to `max-num-seqs=1` (single stream) | correct concurrency at `max-num-seqs>1` |
-| `max-num-seqs>1` → silent acceptance collapse (Patch 1) or HTTP 500 (Patch 2) | 0 errors, acceptance ~0.55, byte-identical correctness |
-| 1 stream @ ~52 tok/s | up to **301 tok/s @16 static / 190 @16 staggered** per replica; single-stream unchanged |
+To go wider, run **N independent patched TP=2 stacks** behind a least-connections
+router. Each request runs entirely on one stack — no cross-stack coordination — so
+aggregate and concurrency scale **~linearly** with stacks.
 
-The patch converts DSpark from a depth-only (long-context, single-stream) engine
-into one that also scales in **width** (concurrency) — without regressing
-single-stream speed or output.
+## Measured: 1 stack vs 2 stacks (staggered, real arrivals)
+
+| total concurrency | 1 stack (2 Sparks) | 2 stacks (4 Sparks) | scaling |
+|---:|---:|---:|---:|
+| 8  | 139 tok/s | **195 tok/s** (4+4) | — |
+| 16 | 191 tok/s | **266 tok/s** (8+8) | — |
+| 32 | —         | **375 tok/s** (16+16) | **~1.96× vs 1-stack@16** |
+
+2-stack run: 32/32 requests OK, **0 errors**, acceptance ~0.54 — dual stacks hit
+**~1.9–2.0× the single-stack aggregate**, confirming near-linear replica scaling.
+
+## Scaling rule of thumb
+
+| stacks | DGX Sparks | concurrency | aggregate (staggered) |
+|---:|---:|---:|---:|
+| 1 | 2 | 16 | ~191 tok/s |
+| 2 | 4 | 32 | ~375 tok/s |
+| N | 2N | 16N | ~190N tok/s |
+
+Notes:
+- **TP=2 is the floor** for this model (~157 GB weights won't fit one 128 GB GB10),
+  so each stack is 2 Sparks; you can't get more streams by going TP=1 single-node.
+- Put any least-connections proxy (nginx / LiteLLM / a small round-robin) in front
+  of the stacks' endpoints; pin a request to one stack for its lifetime.
+- Per-stream latency drops as in-stack concurrency rises (throughput↔latency trade).
+  For both high width **and** high per-stream tok/s, add stacks rather than raising
+  `max-num-seqs` on one.
+
+---
 
 ### Caveats
-- Certified for correctness, stability (N≤16), and acceptance. A task-quality eval
-  at concurrency (GSM8K/HumanEval N=8 vs single-stream) and a multi-hour soak are
-  recommended before production.
+- Certified for correctness, stability (N≤16/stack, 32 across 2 stacks), and
+  acceptance. A task-quality eval at concurrency (GSM8K/HumanEval N=8 vs
+  single-stream) and a multi-hour soak are recommended before production.
 - Requires `VLLM_DSPARK_GPU_REJECTED_CONTEXT_MASK=1` (the patched ragged path).
 - Validated on V4-Flash-DSpark; V4-Pro-DSpark expected to work (shared code) but
   untested.
