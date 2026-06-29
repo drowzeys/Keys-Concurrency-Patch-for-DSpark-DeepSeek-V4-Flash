@@ -1,0 +1,13 @@
+Keys-Concurrency Patch for DSpark + DeepSeek-V4-Flash/Pro
+Copyright 2026 drowzeys
+
+This product includes software developed by the vLLM project
+(https://github.com/vllm-project/vllm), licensed under Apache-2.0.
+
+The patched source lines are derivatives of:
+ - vLLM (Apache-2.0)
+ - Rafael Caricio's DSpark vLLM integration (rafaelcaricio/vllm)
+ - DSpark packaging by MiaAI-Lab and TonyD2Wild
+
+This repository distributes ONLY the concurrency patch (diffs) and
+independent benchmark scripts, not the upstream overlay sources.
