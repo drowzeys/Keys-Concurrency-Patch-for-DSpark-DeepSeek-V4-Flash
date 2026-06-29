@@ -116,6 +116,42 @@ Notes:
 
 ---
 
+---
+
+# Long-context sweep (single stream, patched stack)
+
+Prompt 10k→256k, 5 iterations each, `max-model-len 262144`. Server-side metrics.
+
+| prompt tokens | TTFT (prefill) | prefill tok/s | decode tok/s |
+|---:|---:|---:|---:|
+| ~10k  | 5.8 s   | 1733 | 32.1 |
+| ~32k  | 18.1 s  | 1769 | 35.7 |
+| ~64k  | 37.1 s  | 1725 | 32.9 |
+| ~128k | 78.9 s  | 1623 | 38.1 |
+| ~192k | 124.4 s | 1544 | 34.9 |
+| ~256k | 174.8 s | 1465 | 32.5 |
+
+**Decode stays flat (~32–38 tok/s) from 10k to 256k** — DSpark's sparse-MLA
+windowed attention keeps decode cost ~constant as context grows. 256k serves
+cleanly (no OOM, ~3 min prefill); prefill holds ~1.5k tok/s, scaling near-linearly.
+
+# Standard quality benchmarks (model served on the patched stack)
+
+These characterize output quality of `DeepSeek-V4-Flash-DSpark` served via the
+patched stack (greedy, thinking off). They complement the concurrency
+quality-neutrality cert above.
+
+| benchmark | score | method |
+|---|---:|---|
+| **HumanEval** | **95.7%** pass@1 | evalplus, all 164, sandboxed execution |
+| **HumanEval+** | **90.2%** pass@1 | evalplus, base + extra tests |
+| **GSM8K** | **95.0%** | 0-shot chat, last-number extraction |
+| **MATH** (hendrycks) | **85.2%** | 210 problems (30/subject), `\boxed{}` + `math_verify` |
+
+(For reference, lm_eval's 5-shot GSM8K reports 76% flexible-extract — a known
+format-mismatch artifact for chat/reasoning models; the 0-shot chat number above is
+representative of real use.)
+
 ### Caveats
 - Certified for correctness, stability (N≤16/stack, 32 across 2 stacks),
   acceptance, **and task quality (GSM8K N=8 vs single-stream: quality-neutral,
