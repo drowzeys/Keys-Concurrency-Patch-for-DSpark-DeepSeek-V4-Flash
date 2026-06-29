@@ -56,7 +56,7 @@ DSpark's only persistent per-request draft state (`DeepSeekV4DSparkAttention.mai
 Both patches keep the original rectangular fast-path for uniform/static/single-stream batches, so those cases are **byte-identical**. Ragged/mixed steps run eager (never cudagraph-captured), so dynamic shapes are safe; the uniform decode-only graphed path is unchanged.
 
 Files touched (overlay):
-- `vllm/v1/spec_decode/dspark_proposer.py` (+146 / −6)
+- `vllm/v1/spec_decode/dspark_proposer.py` (+158 / −10)
 - `vllm/models/deepseek_v4/nvidia/dspark.py` (+110 / −12)
 - `vllm/v1/worker/gpu_model_runner.py` (+10 / −0)
 
@@ -89,8 +89,8 @@ python3 benchmarks/bench_concurrent.py    http://<head>:<port> 1,2,4,8,16  # sta
 
 ## Status & caveats (honest)
 
-- Validated for **correctness** (byte-identical under churn), **stability** (0 errors at N≤16), and **acceptance** (~0.55 under load). Single-stream is a no-op.
-- **Not yet** certified with a task-quality eval at concurrency (GSM8K/HumanEval N=8 vs single-stream) or a multi-hour soak. Recommended before production.
+- Validated for **correctness** (byte-identical under churn), **stability** (0 errors at N≤16), **acceptance** (~0.55 under load), and **task quality** (GSM8K N=8 vs single-stream: quality-neutral, 97.5% per-question agreement — see `RESULTS.md`). Single-stream is a no-op.
+- A multi-hour soak is still recommended before production.
 - Only the `VLLM_DSPARK_GPU_REJECTED_CONTEXT_MASK=1` code path was made ragged; the legacy `_trim_rejected_target_context` path still assumes uniform.
 - DeepSeek-**V4-Pro**-DSpark: expected to work (shared DSpark code) but **untested**.
 

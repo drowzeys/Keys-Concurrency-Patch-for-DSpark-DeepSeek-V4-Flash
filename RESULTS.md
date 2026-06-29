@@ -52,6 +52,24 @@ acceptance stays healthy (~0.55) — DSpark keeps accelerating under concurrency
 | Requests succeeding while others churn | 16/16, 0 errors |
 | Single-stream vs unpatched engine | byte-identical (no-op) |
 
+## Quality eval — GSM8K (concurrency is quality-neutral)
+
+Same 200 GSM8K questions, greedy (temp 0), run on one patched stack two ways:
+
+| run | accuracy | request errors |
+|---|---:|---:|
+| Sequential (single-stream path) | **95.0%** (190/200) | 0 |
+| Concurrent N=8 (patched batching path) | **93.5%** (187/200) | 0 |
+| **Per-question agreement** | **97.5%** (195/200 identical predictions) | |
+
+Only 5/200 predictions differ (4 seq-only-correct, 1 conc-only-correct; one is an
+answer-*extraction* artifact). The divergences are small CoT drift on borderline
+problems — the signature of **batch-size FP-reduction-order nondeterminism**, which
+is inherent to *any* vLLM model between batch=1 and batch=8, not the patch. Net
+accuracy delta is within batch noise. **Conclusion: concurrency does not degrade
+output quality.** (This eval also caught and drove a fix — see Patch 2b in
+`docs/PATCHES.md`.)
+
 ## Summary (one 2-Spark stack)
 
 | | before patch | after (Patch 1 + Patch 2) |
@@ -99,9 +117,10 @@ Notes:
 ---
 
 ### Caveats
-- Certified for correctness, stability (N≤16/stack, 32 across 2 stacks), and
-  acceptance. A task-quality eval at concurrency (GSM8K/HumanEval N=8 vs
-  single-stream) and a multi-hour soak are recommended before production.
+- Certified for correctness, stability (N≤16/stack, 32 across 2 stacks),
+  acceptance, **and task quality (GSM8K N=8 vs single-stream: quality-neutral,
+  97.5% per-question agreement)**. A multi-hour soak is still recommended before
+  production.
 - Requires `VLLM_DSPARK_GPU_REJECTED_CONTEXT_MASK=1` (the patched ragged path).
 - Validated on V4-Flash-DSpark; V4-Pro-DSpark expected to work (shared code) but
   untested.

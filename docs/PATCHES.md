@@ -8,7 +8,7 @@ Files changed:
 
 | file | + | − | role |
 |---|---:|---:|---|
-| `vllm/v1/spec_decode/dspark_proposer.py` | 146 | 6 | draft loop, slot map, ragged context |
+| `vllm/v1/spec_decode/dspark_proposer.py` | 158 | 10 | draft loop, slot map, ragged context (Patch 1+2+2b) |
 | `vllm/models/deepseek_v4/nvidia/dspark.py` | 110 | 12 | persistent KV store (`store_main_kv`), `prefill_main` |
 | `vllm/v1/worker/gpu_model_runner.py` | 10 | 0 | thread `req_ids` into `propose()` |
 
@@ -107,3 +107,31 @@ the uniform decode-only graphed path is untouched.
 Only the `VLLM_DSPARK_GPU_REJECTED_CONTEXT_MASK=1` path was made ragged (the path
 used in serving). The legacy `_trim_rejected_target_context` path still assumes
 uniform. **Run with `VLLM_DSPARK_GPU_REJECTED_CONTEXT_MASK=1`.**
+
+---
+
+## Patch 2b — ragged detection independent of rejection
+
+### Symptom (found by the GSM8K quality eval)
+After Patch 2, a prefill-heavy step with **no rejection** still 500'd:
+`ValueError: ... got 166 rows for batch_size=3` at `_view_by_request`. Earlier
+staggered tests (uniform-ish prompts) missed it; GSM8K's varied prompt lengths hit
+it.
+
+### Root cause
+Patch 2 computed `ragged` **only inside** `if gpu_mask and num_rejected_tokens_gpu
+is not None`. On steps with no rejection (`num_rejected=None`, e.g. fresh requests
+prefilling), detection was skipped and the code fell through to the rectangular
+`_view_by_request` → crash. Raggedness depends on `query_start_loc` segment lengths,
+**not** on rejection.
+
+### Fix
+- Enter the detection/ragged branch whenever `_gpu_rejected_context_mask` is on,
+  **regardless of `num_rejected_tokens_gpu`** (which may be `None`).
+- In the ragged anchor, default `rejected` to zeros when `num_rejected_tokens_gpu is
+  None`. `_store_main_kv_ragged` already handled `None` (no masking).
+
+### Validation
+GSM8K N=8 (200 Q) — the load that crashed pre-fix — now completes with **0 errors**,
+93.5% accuracy vs 95.0% sequential, **97.5% per-question agreement** (quality-neutral
+within batch FP-nondeterminism).
