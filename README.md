@@ -83,7 +83,12 @@ Requirement: run with **`VLLM_DSPARK_GPU_REJECTED_CONTEXT_MASK=1`** (the ragged 
 python3 benchmarks/correctness_test.py   http://<head>:<port>          # byte-identical under churn
 python3 benchmarks/staggered_bench.py     http://<head>:<port> 16 0.4  # real staggered arrivals
 python3 benchmarks/bench_concurrent.py    http://<head>:<port> 1,2,4,8,16  # static sweep
+bash   benchmarks/lc_sweep.sh                                          # long-context 10k->256k
+bash   benchmarks/standard_eval.sh                                     # GSM8K + MATH + HumanEval(+)
 ```
+
+For the long-context and quality numbers (and the lm-eval / `math_verify` gotchas
+and fixes needed to reproduce them), see [`docs/EVAL-NOTES.md`](docs/EVAL-NOTES.md).
 
 ---
 
